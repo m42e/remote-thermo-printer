@@ -49,7 +49,11 @@ def get_oauth(settings: ServerSettings) -> OAuth:
             server_metadata_url=(
                 settings.oidc_issuer.rstrip("/") + "/.well-known/openid-configuration"
             ),
-            client_kwargs={"scope": settings.oidc_scopes},
+            client_kwargs={
+                "scope": settings.oidc_scopes,
+                # Authorization Code with PKCE (Gitea advertises S256 support).
+                "code_challenge_method": "S256",
+            },
         )
         _oauth = oauth
     return _oauth

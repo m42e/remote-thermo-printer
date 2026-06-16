@@ -1,0 +1,59 @@
+# docker-compose.yml — backend (server) for remote-thermo-printer
+#
+# Usage:
+#   docker compose up -d --build
+#
+# Every value below can be edited in place, or supplied from the host
+# environment / a sibling ".env" file (Compose interpolates ${...:-default}).
+# Leave a value empty to keep the application default / disable that feature.
+
+services:
+  server:
+    build: .
+    # Or pull the pre-built image instead of building locally:
+    # image: git.example.com/youruser/rtp:latest
+    container_name: rtp-server
+    restart: unless-stopped
+    ports:
+      - "${RTP_SERVER_PORT:-8000}:${RTP_SERVER_PORT:-8000}"
+    environment:
+      # --- networking --------------------------------------------------------
+      RTP_SERVER_HOST: "${RTP_SERVER_HOST:-0.0.0.0}"
+      RTP_SERVER_PORT: "${RTP_SERVER_PORT:-8000}"
+
+      # --- static tokens (machine-to-machine auth) ---------------------------
+      # Legacy shared secret used for BOTH the printer and the HTTP API when the
+      # specific tokens below are unset. Empty disables token auth.
+      RTP_SERVER_TOKEN: "${RTP_SERVER_TOKEN:-}"
+      # Secret the WebSocket printer clients must present (must match
+      # RTP_CLIENT_TOKEN on the Raspberry Pi). Overrides RTP_SERVER_TOKEN.
+      RTP_SERVER_PRINTER_TOKEN: "${RTP_SERVER_PRINTER_TOKEN:-}"
+      # Static bearer token for scripts / CI hitting the HTTP API.
+      RTP_SERVER_API_TOKEN: "${RTP_SERVER_API_TOKEN:-}"
+
+      # --- OIDC login for web-UI users (Gitea) -------------------------------
+      RTP_SERVER_OIDC_ENABLED: "${RTP_SERVER_OIDC_ENABLED:-false}"
+      RTP_SERVER_OIDC_ISSUER: "${RTP_SERVER_OIDC_ISSUER:-https://git.example.com}"
+      RTP_SERVER_OIDC_CLIENT_ID: "${RTP_SERVER_OIDC_CLIENT_ID:-}"
+      RTP_SERVER_OIDC_CLIENT_SECRET: "${RTP_SERVER_OIDC_CLIENT_SECRET:-}"
+      RTP_SERVER_OIDC_SCOPES: "${RTP_SERVER_OIDC_SCOPES:-openid profile email groups}"
+      # Public base URL of THIS backend; used to build the OIDC redirect URI
+      # (<public-url>/auth/callback). Set to the https:// URL in production.
+      RTP_SERVER_PUBLIC_URL: "${RTP_SERVER_PUBLIC_URL:-}"
+      # Allow-lists (comma separated). Empty = any authenticated Gitea user.
+      RTP_SERVER_OIDC_ALLOWED_USERS: "${RTP_SERVER_OIDC_ALLOWED_USERS:-}"
+      RTP_SERVER_OIDC_ALLOWED_GROUPS: "${RTP_SERVER_OIDC_ALLOWED_GROUPS:-}"
+
+      # --- session cookie ----------------------------------------------------
+      # Sign the login session cookie. Set a long random value so users stay
+      # logged in across restarts; empty = random key generated at startup.
+      RTP_SERVER_SESSION_SECRET: "${RTP_SERVER_SESSION_SECRET:-}"
+      RTP_SERVER_SESSION_TTL_HOURS: "${RTP_SERVER_SESSION_TTL_HOURS:-12}"
+
+      # --- limits ------------------------------------------------------------
+      RTP_SERVER_MAX_UPLOAD_MB: "${RTP_SERVER_MAX_UPLOAD_MB:-25}"
+
+    # Optional: provide configuration through a mounted .env file instead of the
+    # environment block above (the app also reads /app/.env via pydantic-settings).
+    # volumes:
+    #   - ./.env:/app/.env:ro

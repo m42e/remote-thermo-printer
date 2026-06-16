@@ -125,13 +125,19 @@
   <header>
     <h1>🧾 Remote Thermo Printer</h1>
     <div class="header-right">
-      <div class="status"><span id="conn-dot" class="dot"></span><span id="conn-text">no printer online</span></div>
+      <div id="conn-status" class="status"><span id="conn-dot" class="dot"></span><span id="conn-text">no printer online</span></div>
       <div id="account" class="account"></div>
     </div>
   </header>
 
   <main>
-    <section class="panel span-2">
+    <section id="login-gate" class="panel span-2 hidden" style="text-align:center; padding:2rem 1.25rem;">
+      <h2 style="color:var(--accent);">Sign in</h2>
+      <p class="muted" id="login-gate-msg">Please log in to use the printer.</p>
+      <div id="login-gate-actions"></div>
+    </section>
+
+    <section class="panel span-2 requires-auth">
       <div class="row">
         <div id="token-field" class="hidden">
           <label for="token">API token (leave blank if disabled)</label>
@@ -144,7 +150,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel requires-auth">
       <h2>Create a receipt</h2>
       <div class="tabs">
         <button data-tab="text" class="active">Text</button>
@@ -225,7 +231,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel requires-auth">
       <h2>Connected printers</h2>
       <table>
         <thead><tr><th>ID</th><th>Name</th><th>Queued</th></tr></thead>
@@ -247,6 +253,7 @@
     tokenInput.value = localStorage.getItem("rtp_token") || "";
     tokenInput.addEventListener("change", () => {
       localStorage.setItem("rtp_token", tokenInput.value);
+      applyGate();
       refresh();
     });
 
@@ -279,17 +286,51 @@
         const who = auth.user.name || auth.user.username || auth.user.email || "user";
         el.innerHTML = `<span>Signed in as <strong>${who}</strong></span>` +
           `<a class="logout" href="${auth.logoutUrl}">Logout</a>`;
-      } else if (auth.oidcEnabled) {
-        el.innerHTML = `<a class="btn-link" href="${auth.loginUrl}">Login with Gitea</a>`;
-      } else if (auth.authRequired) {
-        el.innerHTML = `<span>Enter an API token below</span>`;
       } else {
-        el.innerHTML = `<span>Auth disabled</span>`;
+        // While logged out the login call-to-action lives in the gate below.
+        el.innerHTML = "";
       }
       // Show the token field only when a static API token is accepted and the
       // user is not already signed in via OIDC.
       $("token-field").classList.toggle(
         "hidden", !auth.apiTokenRequired || !!auth.user);
+    }
+
+    // Reveal the app (receipt forms, printers, jobs) only once authenticated;
+    // otherwise show nothing but a login prompt.
+    function applyGate() {
+      const locked = !isAuthed();
+      document.querySelectorAll(".requires-auth").forEach((el) =>
+        el.classList.toggle("hidden", locked));
+      $("conn-status").classList.toggle("hidden", locked);
+      $("login-gate").classList.toggle("hidden", !locked);
+      if (!locked) return;
+
+      const msg = $("login-gate-msg");
+      const actions = $("login-gate-actions");
+      if (auth.oidcEnabled) {
+        msg.textContent = "Please log in to use the printer.";
+        actions.innerHTML = `<a class="btn-link" href="${auth.loginUrl}">Login with Gitea</a>`;
+      } else if (auth.apiTokenRequired) {
+        msg.textContent = "Enter the API token to continue.";
+        actions.innerHTML =
+          `<input id="gate-token" type="password" placeholder="API token" autocomplete="off" ` +
+          `style="max-width:280px;margin:0.5rem auto;" />` +
+          `<div><button id="gate-unlock">Unlock</button></div>`;
+        const input = $("gate-token");
+        input.value = tokenInput.value;
+        const submit = () => {
+          tokenInput.value = input.value.trim();
+          localStorage.setItem("rtp_token", tokenInput.value);
+          applyGate();
+          refresh();
+        };
+        $("gate-unlock").addEventListener("click", submit);
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+      } else {
+        msg.textContent = "Authentication required.";
+        actions.innerHTML = "";
+      }
     }
 
     async function loadAuth() {
@@ -308,6 +349,7 @@
         auth.user = res.ok ? (await res.json()).user : null;
       } catch (e) { auth.user = null; }
       renderAccount();
+      applyGate();
     }
 
     function toast(message, kind = "ok") {
