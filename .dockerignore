@@ -1,0 +1,41 @@
+# Keep the Docker build context small and reproducible.
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local config (pass env vars or mount at runtime instead)
+.env
+
+# Client-only assets are not needed in the server image build context,
+# but client/ IS required by the build (see Dockerfile) so it is not ignored.
+
+# VCS / tooling / editor
+.git/
+.gitignore
+.github/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+.idea/
+
+# OS noise
+.DS_Store
+
+# Docker files themselves
+Dockerfile
+.dockerignore
+
+# Logs / runtime artifacts
+*.log
+out.bin

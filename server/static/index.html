@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Remote Thermo Printer</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --panel-2: #273449;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #0ea5e9;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --border: #334155;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    h1 { font-size: 1.25rem; margin: 0; }
+    h2 { font-size: 1rem; margin: 0 0 0.75rem; color: var(--accent); }
+    main {
+      max-width: 1024px;
+      margin: 0 auto;
+      padding: 1.5rem;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+    .span-2 { grid-column: 1 / -1; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin: 0.6rem 0 0.2rem; }
+    input[type=text], input[type=password], input[type=number], textarea, select {
+      width: 100%;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0.5rem 0.6rem;
+      font: inherit;
+    }
+    textarea { min-height: 120px; resize: vertical; font-family: ui-monospace, monospace; }
+    .row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .row > div { flex: 1; min-width: 120px; }
+    .checks { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.6rem; }
+    .checks label { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--text); }
+    .checks input { width: auto; }
+    button {
+      margin-top: 1rem;
+      background: var(--accent-2);
+      color: #001018;
+      border: 0;
+      border-radius: 8px;
+      padding: 0.6rem 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent); }
+    .tabs { display: flex; gap: 0.4rem; margin-bottom: 1rem; }
+    .tabs button {
+      margin: 0; background: var(--panel-2); color: var(--muted);
+      font-weight: 500; padding: 0.4rem 0.9rem;
+    }
+    .tabs button.active { background: var(--accent-2); color: #001018; }
+    .tab { display: none; }
+    .tab.active { display: block; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; }
+    .pill { padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+    .pill.printed { background: rgba(34,197,94,.15); color: var(--ok); }
+    .pill.sent { background: rgba(56,189,248,.15); color: var(--accent); }
+    .pill.pending { background: rgba(245,158,11,.15); color: var(--warn); }
+    .pill.error { background: rgba(239,68,68,.15); color: var(--err); }
+    .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--err); }
+    .dot.online { background: var(--ok); }
+    .status { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); }
+    .toast {
+      position: fixed; bottom: 1rem; right: 1rem; padding: 0.7rem 1rem;
+      border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border);
+      opacity: 0; transform: translateY(10px); transition: all .2s; max-width: 320px;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.ok { border-color: var(--ok); }
+    .toast.err { border-color: var(--err); }
+    .muted { color: var(--muted); font-size: 0.8rem; }
+    @media (max-width: 720px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🧾 Remote Thermo Printer</h1>
+    <div class="status"><span id="conn-dot" class="dot"></span><span id="conn-text">no printer online</span></div>
+  </header>
+
+  <main>
+    <section class="panel span-2">
+      <div class="row">
+        <div>
+          <label for="token">API token (leave blank if disabled)</label>
+          <input id="token" type="password" placeholder="shared secret" autocomplete="off" />
+        </div>
+        <div>
+          <label for="target">Target printer</label>
+          <select id="target"><option value="">All connected printers</option></select>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Create a receipt</h2>
+      <div class="tabs">
+        <button data-tab="text" class="active">Text</button>
+        <button data-tab="image">Image</button>
+        <button data-tab="pdf">PDF</button>
+      </div>
+
+      <div id="tab-text" class="tab active">
+        <label for="text-content">Text</label>
+        <textarea id="text-content" placeholder="Hello world!&#10;Order #1234"></textarea>
+        <div class="row">
+          <div>
+            <label for="text-align">Alignment</label>
+            <select id="text-align">
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+          <div>
+            <label for="text-underline">Underline</label>
+            <select id="text-underline">
+              <option value="0">None</option>
+              <option value="1">Single</option>
+              <option value="2">Double</option>
+            </select>
+          </div>
+        </div>
+        <div class="checks">
+          <label><input id="text-bold" type="checkbox" /> Bold</label>
+          <label><input id="text-dw" type="checkbox" /> Double width</label>
+          <label><input id="text-dh" type="checkbox" /> Double height</label>
+          <label><input id="text-cut" type="checkbox" checked /> Cut</label>
+        </div>
+        <button id="send-text">Print text</button>
+      </div>
+
+      <div id="tab-image" class="tab">
+        <label for="image-file">Image file (PNG, JPEG, GIF, BMP)</label>
+        <input id="image-file" type="file" accept="image/*" />
+        <div class="row">
+          <div>
+            <label for="image-align">Alignment</label>
+            <select id="image-align">
+              <option value="center">Center</option>
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+        </div>
+        <div class="checks">
+          <label><input id="image-cut" type="checkbox" checked /> Cut</label>
+        </div>
+        <button id="send-image">Print image</button>
+      </div>
+
+      <div id="tab-pdf" class="tab">
+        <label for="pdf-file">PDF file</label>
+        <input id="pdf-file" type="file" accept="application/pdf" />
+        <div class="row">
+          <div>
+            <label for="pdf-align">Alignment</label>
+            <select id="pdf-align">
+              <option value="center">Center</option>
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+          <div>
+            <label for="pdf-dpi">Render DPI</label>
+            <input id="pdf-dpi" type="number" value="203" min="72" max="600" />
+          </div>
+        </div>
+        <div class="checks">
+          <label><input id="pdf-cut" type="checkbox" checked /> Cut</label>
+        </div>
+        <button id="send-pdf">Print PDF</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Connected printers</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Name</th><th>Queued</th></tr></thead>
+        <tbody id="printers"><tr><td colspan="3" class="muted">none</td></tr></tbody>
+      </table>
+      <h2 style="margin-top:1.25rem;">Recent jobs</h2>
+      <table>
+        <thead><tr><th>Receipt</th><th>Kinds</th><th>State</th></tr></thead>
+        <tbody id="jobs"><tr><td colspan="3" class="muted">none yet</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const tokenInput = $("token");
+    tokenInput.value = localStorage.getItem("rtp_token") || "";
+    tokenInput.addEventListener("change", () => localStorage.setItem("rtp_token", tokenInput.value));
+
+    function authHeaders(extra = {}) {
+      const t = tokenInput.value.trim();
+      return t ? { ...extra, Authorization: "Bearer " + t } : extra;
+    }
+
+    function toast(message, kind = "ok") {
+      const el = $("toast");
+      el.textContent = message;
+      el.className = "toast show " + kind;
+      setTimeout(() => (el.className = "toast"), 3200);
+    }
+
+    // Tabs
+    document.querySelectorAll(".tabs button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+        btn.classList.add("active");
+        $("tab-" + btn.dataset.tab).classList.add("active");
+      });
+    });
+
+    async function submitJobs(promise) {
+      try {
+        const res = await promise;
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || res.status + " " + res.statusText);
+        }
+        const data = await res.json();
+        toast("Queued " + data.count + " job(s)");
+        refresh();
+      } catch (err) {
+        toast("Error: " + err.message, "err");
+      }
+    }
+
+    function target() {
+      return $("target").value || null;
+    }
+
+    $("send-text").addEventListener("click", () => {
+      const payload = {
+        text: $("text-content").value,
+        align: $("text-align").value,
+        underline: parseInt($("text-underline").value, 10),
+        bold: $("text-bold").checked,
+        double_width: $("text-dw").checked,
+        double_height: $("text-dh").checked,
+        cut: $("text-cut").checked,
+        target: target(),
+      };
+      if (!payload.text.trim()) return toast("Enter some text first", "err");
+      submitJobs(fetch("/api/receipts/text", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(payload),
+      }));
+    });
+
+    function uploadFile(fileEl, alignEl, cutEl, dpiEl) {
+      const file = fileEl.files[0];
+      if (!file) return toast("Choose a file first", "err");
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("align", alignEl.value);
+      fd.append("cut", cutEl.checked);
+      if (dpiEl) fd.append("dpi", dpiEl.value);
+      const t = target();
+      if (t) fd.append("target", t);
+      submitJobs(fetch("/api/upload", { method: "POST", headers: authHeaders(), body: fd }));
+    }
+
+    $("send-image").addEventListener("click", () =>
+      uploadFile($("image-file"), $("image-align"), $("image-cut"), null));
+    $("send-pdf").addEventListener("click", () =>
+      uploadFile($("pdf-file"), $("pdf-align"), $("pdf-cut"), $("pdf-dpi")));
+
+    async function refresh() {
+      try {
+        const health = await (await fetch("/api/health")).json();
+        const printers = health.printers || [];
+        const dot = $("conn-dot");
+        dot.className = "dot" + (printers.length ? " online" : "");
+        $("conn-text").textContent = printers.length
+          ? printers.length + " printer(s) online"
+          : "no printer online";
+
+        const sel = $("target");
+        const current = sel.value;
+        sel.innerHTML = '<option value="">All connected printers</option>' +
+          printers.map((p) => `<option value="${p.printer_id}">${p.name || p.printer_id}</option>`).join("");
+        sel.value = current;
+
+        $("printers").innerHTML = printers.length
+          ? printers.map((p) => `<tr><td>${p.printer_id}</td><td>${p.name || ""}</td><td>${p.queued}</td></tr>`).join("")
+          : '<tr><td colspan="3" class="muted">none</td></tr>';
+      } catch (e) { /* server unreachable */ }
+
+      try {
+        const res = await fetch("/api/jobs?limit=15", { headers: authHeaders() });
+        if (res.ok) {
+          const data = await res.json();
+          const jobs = data.jobs || [];
+          $("jobs").innerHTML = jobs.length
+            ? jobs.map((j) => `<tr>
+                <td title="${j.job_id}">${(j.title || j.receipt_id).slice(0, 18)}</td>
+                <td>${(j.element_kinds || []).join(", ")}</td>
+                <td><span class="pill ${j.state}">${j.state}</span></td>
+              </tr>`).join("")
+            : '<tr><td colspan="3" class="muted">none yet</td></tr>';
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>
