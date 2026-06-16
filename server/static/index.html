@@ -79,6 +79,17 @@
       cursor: pointer;
     }
     button:hover { background: var(--accent); }
+    .btn-link {
+      display: inline-block; text-decoration: none; margin: 0;
+      background: var(--accent-2); color: #001018; border: 0; border-radius: 8px;
+      padding: 0.45rem 0.9rem; font-weight: 600; cursor: pointer; font-size: 0.85rem;
+    }
+    .btn-link:hover { background: var(--accent); }
+    .header-right { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .account { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; color: var(--muted); }
+    .account a.logout { color: var(--accent); text-decoration: none; }
+    .account a.logout:hover { text-decoration: underline; }
+    .hidden { display: none !important; }
     .tabs { display: flex; gap: 0.4rem; margin-bottom: 1rem; }
     .tabs button {
       margin: 0; background: var(--panel-2); color: var(--muted);
@@ -113,13 +124,16 @@
 <body>
   <header>
     <h1>🧾 Remote Thermo Printer</h1>
-    <div class="status"><span id="conn-dot" class="dot"></span><span id="conn-text">no printer online</span></div>
+    <div class="header-right">
+      <div class="status"><span id="conn-dot" class="dot"></span><span id="conn-text">no printer online</span></div>
+      <div id="account" class="account"></div>
+    </div>
   </header>
 
   <main>
     <section class="panel span-2">
       <div class="row">
-        <div>
+        <div id="token-field" class="hidden">
           <label for="token">API token (leave blank if disabled)</label>
           <input id="token" type="password" placeholder="shared secret" autocomplete="off" />
         </div>
@@ -231,11 +245,69 @@
     const $ = (id) => document.getElementById(id);
     const tokenInput = $("token");
     tokenInput.value = localStorage.getItem("rtp_token") || "";
-    tokenInput.addEventListener("change", () => localStorage.setItem("rtp_token", tokenInput.value));
+    tokenInput.addEventListener("change", () => {
+      localStorage.setItem("rtp_token", tokenInput.value);
+      refresh();
+    });
+
+    // Auth state, populated from the backend on load.
+    const auth = {
+      oidcEnabled: false,
+      apiTokenRequired: false,
+      authRequired: false,
+      loginUrl: "/auth/login",
+      logoutUrl: "/auth/logout",
+      user: null,
+    };
 
     function authHeaders(extra = {}) {
       const t = tokenInput.value.trim();
       return t ? { ...extra, Authorization: "Bearer " + t } : extra;
+    }
+
+    // True when the UI is allowed to call protected endpoints.
+    function isAuthed() {
+      if (auth.user) return true;            // logged in via Gitea
+      if (!auth.authRequired) return true;   // auth disabled on the server
+      if (auth.apiTokenRequired && tokenInput.value.trim()) return true;
+      return false;
+    }
+
+    function renderAccount() {
+      const el = $("account");
+      if (auth.user) {
+        const who = auth.user.name || auth.user.username || auth.user.email || "user";
+        el.innerHTML = `<span>Signed in as <strong>${who}</strong></span>` +
+          `<a class="logout" href="${auth.logoutUrl}">Logout</a>`;
+      } else if (auth.oidcEnabled) {
+        el.innerHTML = `<a class="btn-link" href="${auth.loginUrl}">Login with Gitea</a>`;
+      } else if (auth.authRequired) {
+        el.innerHTML = `<span>Enter an API token below</span>`;
+      } else {
+        el.innerHTML = `<span>Auth disabled</span>`;
+      }
+      // Show the token field only when a static API token is accepted and the
+      // user is not already signed in via OIDC.
+      $("token-field").classList.toggle(
+        "hidden", !auth.apiTokenRequired || !!auth.user);
+    }
+
+    async function loadAuth() {
+      try {
+        const cfg = await (await fetch("/api/auth/config")).json();
+        Object.assign(auth, {
+          oidcEnabled: cfg.oidc_enabled,
+          apiTokenRequired: cfg.api_token_required,
+          authRequired: cfg.auth_required,
+          loginUrl: cfg.login_url || "/auth/login",
+          logoutUrl: cfg.logout_url || "/auth/logout",
+        });
+      } catch (e) { /* server unreachable */ }
+      try {
+        const res = await fetch("/api/me", { credentials: "same-origin" });
+        auth.user = res.ok ? (await res.json()).user : null;
+      } catch (e) { auth.user = null; }
+      renderAccount();
     }
 
     function toast(message, kind = "ok") {
@@ -256,8 +328,14 @@
     });
 
     async function submitJobs(promise) {
+      if (!isAuthed()) {
+        return toast(
+          auth.oidcEnabled ? "Please log in with Gitea first" : "Enter the API token first",
+          "err");
+      }
       try {
         const res = await promise;
+        if (res.status === 401) throw new Error("Not authorized – please log in");
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.detail || res.status + " " + res.statusText);
@@ -288,6 +366,7 @@
       if (!payload.text.trim()) return toast("Enter some text first", "err");
       submitJobs(fetch("/api/receipts/text", {
         method: "POST",
+        credentials: "same-origin",
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(payload),
       }));
@@ -303,7 +382,8 @@
       if (dpiEl) fd.append("dpi", dpiEl.value);
       const t = target();
       if (t) fd.append("target", t);
-      submitJobs(fetch("/api/upload", { method: "POST", headers: authHeaders(), body: fd }));
+      submitJobs(fetch("/api/upload", {
+        method: "POST", credentials: "same-origin", headers: authHeaders(), body: fd }));
     }
 
     $("send-image").addEventListener("click", () =>
@@ -312,28 +392,44 @@
       uploadFile($("pdf-file"), $("pdf-align"), $("pdf-cut"), $("pdf-dpi")));
 
     async function refresh() {
+      // Online indicator from the public health endpoint (counts only).
       try {
         const health = await (await fetch("/api/health")).json();
-        const printers = health.printers || [];
-        const dot = $("conn-dot");
-        dot.className = "dot" + (printers.length ? " online" : "");
-        $("conn-text").textContent = printers.length
-          ? printers.length + " printer(s) online"
+        const online = health.printers_online || 0;
+        $("conn-dot").className = "dot" + (online ? " online" : "");
+        $("conn-text").textContent = online
+          ? online + " printer(s) online"
           : "no printer online";
-
-        const sel = $("target");
-        const current = sel.value;
-        sel.innerHTML = '<option value="">All connected printers</option>' +
-          printers.map((p) => `<option value="${p.printer_id}">${p.name || p.printer_id}</option>`).join("");
-        sel.value = current;
-
-        $("printers").innerHTML = printers.length
-          ? printers.map((p) => `<tr><td>${p.printer_id}</td><td>${p.name || ""}</td><td>${p.queued}</td></tr>`).join("")
-          : '<tr><td colspan="3" class="muted">none</td></tr>';
       } catch (e) { /* server unreachable */ }
 
+      // Printer list, target dropdown and jobs require authentication.
+      if (!isAuthed()) {
+        $("printers").innerHTML =
+          '<tr><td colspan="3" class="muted">sign in to view</td></tr>';
+        $("jobs").innerHTML =
+          '<tr><td colspan="3" class="muted">sign in to view</td></tr>';
+        return;
+      }
+
       try {
-        const res = await fetch("/api/jobs?limit=15", { headers: authHeaders() });
+        const res = await fetch("/api/printers", {
+          credentials: "same-origin", headers: authHeaders() });
+        if (res.ok) {
+          const printers = (await res.json()).printers || [];
+          const sel = $("target");
+          const current = sel.value;
+          sel.innerHTML = '<option value="">All connected printers</option>' +
+            printers.map((p) => `<option value="${p.printer_id}">${p.name || p.printer_id}</option>`).join("");
+          sel.value = current;
+          $("printers").innerHTML = printers.length
+            ? printers.map((p) => `<tr><td>${p.printer_id}</td><td>${p.name || ""}</td><td>${p.queued}</td></tr>`).join("")
+            : '<tr><td colspan="3" class="muted">none</td></tr>';
+        }
+      } catch (e) { /* ignore */ }
+
+      try {
+        const res = await fetch("/api/jobs?limit=15", {
+          credentials: "same-origin", headers: authHeaders() });
         if (res.ok) {
           const data = await res.json();
           const jobs = data.jobs || [];
@@ -348,7 +444,15 @@
       } catch (e) { /* ignore */ }
     }
 
-    refresh();
+    // Surface OIDC login problems redirected back from the callback.
+    (function loginBanner() {
+      const p = new URLSearchParams(location.search).get("login");
+      if (p === "failed") toast("Login failed, please try again", "err");
+      else if (p === "denied") toast("Your account is not permitted to log in", "err");
+      if (p) history.replaceState({}, "", location.pathname);
+    })();
+
+    loadAuth().then(refresh);
     setInterval(refresh, 3000);
   </script>
 </body>

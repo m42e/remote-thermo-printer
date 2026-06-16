@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from contextlib import suppress
 from pathlib import Path
 from typing import Optional
@@ -13,7 +14,6 @@ from fastapi import (
     FastAPI,
     File,
     Form,
-    Header,
     HTTPException,
     Query,
     UploadFile,
@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
+from starlette.middleware.sessions import SessionMiddleware
 
 from common.protocol import (
     Ack,
@@ -40,6 +41,8 @@ from common.protocol import (
     parse_client_message,
     pdf_receipt,
 )
+from server.auth import require_auth
+from server.auth import router as auth_router
 from server.config import get_settings
 from server.manager import ConnectionManager
 
@@ -51,6 +54,13 @@ logger = logging.getLogger("rtp.server")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+_settings = get_settings()
+if _settings.oidc_active and not _settings.session_secret:
+    logger.warning(
+        "RTP_SERVER_SESSION_SECRET is not set; using a random key "
+        "(users are logged out on every restart)."
+    )
+
 app = FastAPI(title="remote-thermo-printer", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -58,28 +68,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Signs the session cookie used to keep OIDC-authenticated users logged in.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_settings.session_secret or secrets.token_urlsafe(48),
+    session_cookie="rtp_session",
+    max_age=_settings.session_ttl_hours * 3600,
+    same_site="lax",
+    https_only=bool(_settings.public_url and _settings.public_url.startswith("https")),
+)
+app.include_router(auth_router)
 
 manager = ConnectionManager()
 
-
-# --------------------------------------------------------------------------- #
-# Authentication
-# --------------------------------------------------------------------------- #
-def require_token(
-    authorization: Optional[str] = Header(default=None),
-    x_token: Optional[str] = Header(default=None),
-    token: Optional[str] = Query(default=None),
-) -> None:
-    """Validate the shared secret for HTTP endpoints (no-op when unset)."""
-    settings = get_settings()
-    if not settings.token:
-        return
-    provided: Optional[str] = None
-    if authorization and authorization.lower().startswith("bearer "):
-        provided = authorization[7:].strip()
-    provided = provided or x_token or token
-    if provided != settings.token:
-        raise HTTPException(status_code=401, detail="Invalid or missing token")
 
 
 # --------------------------------------------------------------------------- #
@@ -113,30 +114,31 @@ def _jobs_response(jobs) -> dict:
 # --------------------------------------------------------------------------- #
 @app.get("/api/health")
 async def health() -> dict:
+    """Unauthenticated liveness probe; exposes counts only, no printer detail."""
     return {
         "status": "ok",
-        "printers": manager.printers(),
+        "printers_online": len(manager.printers()),
         "pending_jobs": manager.pending_count,
     }
 
 
-@app.get("/api/printers", dependencies=[Depends(require_token)])
+@app.get("/api/printers", dependencies=[Depends(require_auth)])
 async def list_printers() -> dict:
     return {"printers": manager.printers()}
 
 
-@app.get("/api/jobs", dependencies=[Depends(require_token)])
+@app.get("/api/jobs", dependencies=[Depends(require_auth)])
 async def list_jobs(limit: int = Query(default=100, ge=1, le=1000)) -> dict:
     return {"jobs": manager.jobs(limit=limit)}
 
 
-@app.post("/api/receipts", dependencies=[Depends(require_token)])
+@app.post("/api/receipts", dependencies=[Depends(require_auth)])
 async def submit_receipt(request: SubmitRequest) -> dict:
     jobs = await manager.submit(request.receipt, request.target)
     return _jobs_response(jobs)
 
 
-@app.post("/api/receipts/text", dependencies=[Depends(require_token)])
+@app.post("/api/receipts/text", dependencies=[Depends(require_auth)])
 async def submit_text(request: TextRequest) -> dict:
     receipt = Receipt(
         title=request.title,
@@ -161,7 +163,7 @@ async def submit_text(request: TextRequest) -> dict:
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp")
 
 
-@app.post("/api/upload", dependencies=[Depends(require_token)])
+@app.post("/api/upload", dependencies=[Depends(require_auth)])
 async def upload(
     file: UploadFile = File(...),
     target: Optional[str] = Form(default=None),
@@ -227,7 +229,10 @@ async def printer_socket(websocket: WebSocket) -> None:
         await _close_with_error(websocket, "first message must be of type 'hello'", 4400)
         return
 
-    if settings.token and message.token != settings.token:
+    printer_token = settings.effective_printer_token
+    if printer_token and not (
+        message.token and secrets.compare_digest(message.token, printer_token)
+    ):
         logger.warning("Rejected client %s: invalid token", message.printer_id)
         await _close_with_error(websocket, "invalid token", 4401)
         return

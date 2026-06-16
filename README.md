@@ -26,7 +26,8 @@ flowchart LR
 - **Many printer backends**: USB, network, serial, raw device file, CUPS, or a
   `dummy` printer for testing without hardware.
 - **Web UI** for quickly creating receipts, plus a CLI example and a JSON API.
-- **Optional token auth** for both the HTTP API and the WebSocket.
+- **Authentication**: static tokens for the printer device and API scripts, plus
+  **Gitea OIDC login** for web-UI users (with optional user / org-team allow-lists).
 
 ## Project layout
 
@@ -79,7 +80,7 @@ Key client settings:
 | `RTP_CLIENT_CONNECTION` | `usb` \| `network` \| `serial` \| `file` \| `cups` \| `dummy` |
 | `RTP_CLIENT_PRINTER_ID` | Unique id used to target this printer |
 | `RTP_CLIENT_PRINTER_WIDTH` | Print head width in dots (80mm≈576, 58mm≈384) |
-| `RTP_CLIENT_TOKEN` | Shared secret (must match `RTP_SERVER_TOKEN`) |
+| `RTP_CLIENT_TOKEN` | Printer token (must match `RTP_SERVER_PRINTER_TOKEN`) |
 
 Per-connection settings (USB vendor/product id, network host/port, serial
 device, etc.) are documented inline in `.env.example`.
@@ -162,19 +163,24 @@ sudo systemctl enable --now rtp-client
 
 ## HTTP API
 
-All endpoints accept the token via `Authorization: Bearer <token>`,
-an `X-Token` header, or a `?token=` query parameter (only required when
-`RTP_SERVER_TOKEN` is set).
+The HTTP API accepts **either** a logged-in web session (see
+[Authentication](#authentication)) **or** a static API token via
+`Authorization: Bearer <token>`, an `X-Token` header, or a `?token=` query
+parameter. Auth is only enforced when a token or OIDC login is configured.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/health` | Status + connected printers (no auth) |
+| `GET` | `/api/health` | Liveness + counts only (no auth) |
+| `GET` | `/api/auth/config` | Which auth options are enabled (no auth) |
+| `GET` | `/api/me` | The current logged-in user |
+| `GET` | `/auth/login` | Start the Gitea OIDC login |
+| `GET` | `/auth/logout` | Clear the session |
 | `GET` | `/api/printers` | Connected printers |
 | `GET` | `/api/jobs?limit=N` | Recent jobs and their state |
 | `POST` | `/api/receipts` | Submit a full receipt (JSON, see below) |
 | `POST` | `/api/receipts/text` | Quick text receipt |
 | `POST` | `/api/upload` | Upload an image or PDF (multipart form) |
-| `WS` | `/ws` | Printer client connection |
+| `WS` | `/ws` | Printer client connection (printer token) |
 
 A full receipt is a list of elements:
 
@@ -221,12 +227,54 @@ python examples/send_receipt.py --server http://192.168.1.10:8000 --token secret
     text "Hi" --target pi-printer-1
 ```
 
+## Authentication
+
+Three kinds of caller authenticate differently:
+
+| Caller | Mechanism | Configure with |
+| --- | --- | --- |
+| **Printer device** (Raspberry Pi) | static printer token in the WebSocket hello | `RTP_SERVER_PRINTER_TOKEN` = `RTP_CLIENT_TOKEN` |
+| **API scripts / CI** | static bearer token on HTTP requests | `RTP_SERVER_API_TOKEN` |
+| **Web-UI users** (humans) | Gitea OIDC login (session cookie) | `RTP_SERVER_OIDC_*` |
+
+`RTP_SERVER_TOKEN` is a convenient fallback used for both the printer and the
+API when the more specific tokens are unset. With nothing configured the API is
+open (handy on a trusted LAN).
+
+### Gitea OIDC login
+
+1. In Gitea go to **Settings -> Applications -> Create OAuth2 application**.
+   - **Redirect URI**: `<public-url>/auth/callback`
+     (e.g. `https://printer.example.com/auth/callback`).
+   - To restrict by org/team, grant the application the **groups** claim.
+2. Configure the backend:
+
+   ```bash
+   RTP_SERVER_OIDC_ENABLED=true
+   RTP_SERVER_OIDC_ISSUER=https://git.example.com
+   RTP_SERVER_OIDC_CLIENT_ID=<client id>
+   RTP_SERVER_OIDC_CLIENT_SECRET=<client secret>
+   RTP_SERVER_PUBLIC_URL=https://printer.example.com
+   RTP_SERVER_SESSION_SECRET=<long random string>
+   # optional allow-lists (empty = any authenticated Gitea user):
+   RTP_SERVER_OIDC_ALLOWED_USERS=alice,bob@example.com
+   RTP_SERVER_OIDC_ALLOWED_GROUPS=myorg,myorg:printer-admins
+   ```
+
+3. Open the web UI and click **Login with Gitea**. After login the session
+   cookie authorizes API calls from the browser automatically.
+
+Serve the backend over HTTPS (set `RTP_SERVER_PUBLIC_URL` to the `https://` URL)
+so the session cookie is marked `Secure`. Behind a reverse proxy, forward the
+original `Host` / `X-Forwarded-Proto` headers.
+
 ## Notes
 
 - **Image & PDF sizing**: images and rendered PDF pages wider than
   `RTP_CLIENT_PRINTER_WIDTH` dots are scaled down to fit the paper.
 - **PDF rendering** uses PyMuPDF (`pymupdf`). Each page becomes one bitmap.
-- **Security**: set `RTP_SERVER_TOKEN` (and the matching `RTP_CLIENT_TOKEN`) when
+- **Security**: set `RTP_SERVER_PRINTER_TOKEN` (and the matching
+  `RTP_CLIENT_TOKEN`) plus an `RTP_SERVER_API_TOKEN` and/or Gitea OIDC login when
   the backend is reachable beyond a trusted LAN, and terminate TLS (`wss://`,
   `https://`) with a reverse proxy in front of the backend.
 - **Testing without hardware**: keep `RTP_CLIENT_CONNECTION=dummy`; the client
