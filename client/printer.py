@@ -152,6 +152,24 @@ def trim_blank_margin(image: Image.Image, threshold: int = 250) -> Image.Image:
     return image.crop(bbox) if bbox else image
 
 
+# The height field of the GS v 0 / GS ( L raster commands is two bytes, so a
+# single pass can cover at most 65535 dot rows.
+_MAX_RASTER_HEIGHT = 65535
+
+
+def _fragment_height(image_height: int) -> int:
+    """Choose a fragment height that prints an image in as few passes as possible.
+
+    python-escpos defaults to splitting images taller than 960 dots into
+    separate raster commands. On Epson TM printers (e.g. the TM-T70II) every
+    split leaves a faint horizontal line: the print motor briefly stops between
+    commands and python-escpos re-dithers each fragment on its own, so the
+    dither pattern restarts at the boundary. Printing the whole image in one
+    pass keeps the motor running and the dithering continuous.
+    """
+    return max(960, min(image_height, _MAX_RASTER_HEIGHT))
+
+
 class ReceiptPrinter:
     """Render receipts onto an ESC/POS printer described by ``settings``."""
 
@@ -237,6 +255,7 @@ class ReceiptPrinter:
             high_density_vertical=element.high_density,
             high_density_horizontal=element.high_density,
             impl=element.impl,
+            fragment_height=_fragment_height(image.height),
         )
         printer.set_with_default()
 
@@ -245,7 +264,11 @@ class ReceiptPrinter:
         printer.set_with_default(align=element.align.value)
         for page in pages:
             image = self._prepare_image(trim_blank_margin(page))
-            printer.image(image, impl="bitImageRaster")
+            printer.image(
+                image,
+                impl="bitImageRaster",
+                fragment_height=_fragment_height(image.height),
+            )
         printer.set_with_default()
 
     def _render_raw(self, printer, element: RawElement) -> None:
@@ -255,7 +278,13 @@ class ReceiptPrinter:
             raise PrinterError("Printer backend does not support raw commands") from exc
 
     def _prepare_image(self, image: Image.Image) -> Image.Image:
-        """Flatten transparency, convert to grayscale and fit the print width."""
+        """Flatten transparency, scale to the print width and dither to 1-bit.
+
+        The black/white conversion happens here, once, over the whole image.
+        Left to python-escpos it would be redone for each fragment of a tall
+        image, which makes the dither pattern restart at every fragment
+        boundary and shows up as horizontal lines on the print.
+        """
         if image.mode in ("RGBA", "LA") or (
             image.mode == "P" and "transparency" in image.info
         ):
@@ -267,4 +296,6 @@ class ReceiptPrinter:
         if width and image.width > width:
             height = max(1, round(image.height * width / image.width))
             image = image.resize((width, height))
-        return image
+
+        # Floyd-Steinberg dither to pure black/white in a single pass.
+        return image.convert("1")
