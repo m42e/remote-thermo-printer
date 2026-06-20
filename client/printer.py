@@ -143,6 +143,15 @@ def render_pdf(data: bytes, dpi: int) -> List[Image.Image]:
     return images
 
 
+def trim_blank_margin(image: Image.Image, threshold: int = 250) -> Image.Image:
+    """Crop white page margins from rendered PDFs without touching content."""
+    mask = image.convert("L").point(
+        lambda pixel: 0 if pixel >= threshold else 255, "1"
+    )
+    bbox = mask.getbbox()
+    return image.crop(bbox) if bbox else image
+
+
 class ReceiptPrinter:
     """Render receipts onto an ESC/POS printer described by ``settings``."""
 
@@ -235,7 +244,8 @@ class ReceiptPrinter:
         pages = render_pdf(element.decoded(), dpi=element.dpi)
         printer.set_with_default(align=element.align.value)
         for page in pages:
-            printer.image(self._prepare_image(page), impl="bitImageRaster")
+            image = self._prepare_image(trim_blank_margin(page))
+            printer.image(image, impl="bitImageRaster")
         printer.set_with_default()
 
     def _render_raw(self, printer, element: RawElement) -> None:
