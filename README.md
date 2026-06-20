@@ -2,10 +2,11 @@
 
 Print receipts on an Epson (ESC/POS) thermal printer from anywhere.
 
-A small **backend** accepts receipts (text, images, PDFs) over an HTTP API or a
-built‑in web UI and queues them. A lightweight **client** runs on a Raspberry Pi
-next to the printer, keeps a WebSocket open to the backend, and prints every job
-the moment it arrives using [python-escpos](https://github.com/python-escpos/python-escpos).
+A small **backend** accepts receipts (ReceiptLine markdown, text, images, PDFs)
+over an HTTP API or a built‑in web UI and queues them. A lightweight **client**
+runs on a Raspberry Pi next to the printer, keeps a WebSocket open to the
+backend, and prints every job the moment it arrives using
+[python-escpos](https://github.com/python-escpos/python-escpos).
 
 ```mermaid
 flowchart LR
@@ -17,8 +18,10 @@ flowchart LR
 
 ## Features
 
-- **Three content types**: formatted **text**, **images** (PNG/JPEG/GIF/BMP) and
-  **PDF** (every page is rendered and printed).
+- **ReceiptLine markdown** via [receiptline](https://github.com/receiptline/receiptline)
+  for receipt tables, rules, barcodes and QR codes.
+- **Three basic content types**: formatted **text**, **images**
+  (PNG/JPEG/GIF/BMP) and **PDF** (every page is rendered and printed).
 - **Push printing**: jobs are delivered instantly over a persistent WebSocket.
 - **Reliable delivery**: jobs submitted while the printer is offline are queued;
   un‑acknowledged jobs are requeued if the client drops (at‑least‑once).
@@ -28,6 +31,8 @@ flowchart LR
 - **Web UI** for quickly creating receipts, plus a CLI example and a JSON API.
 - **Authentication**: static tokens for the printer device and API scripts, plus
   **Gitea OIDC login** for web-UI users (with optional user / org-team allow-lists).
+- **Automatic client updates**: the Pi client pulls new code from the backend
+  over the WebSocket and reloads itself — no SSH or manual restart.
 
 ## Project layout
 
@@ -46,7 +51,11 @@ Requires Python 3.9+.
 
 ```bash
 pip install ".[server]"
+npm install
 ```
+
+ReceiptLine rendering runs through the upstream Node.js package, so the backend
+host also needs Node.js available on `PATH`.
 
 **Client** (the Raspberry Pi attached to the printer):
 
@@ -161,6 +170,36 @@ WantedBy=multi-user.target
 sudo systemctl enable --now rtp-client
 ```
 
+## Automatic client updates
+
+The client keeps itself in sync with the backend over the same WebSocket — no
+SSH, `git pull` or manual restart on the Pi.
+
+How it works:
+
+1. On connect the client reports a fingerprint (`bundle_revision`) of its
+   running `client` + `common` source.
+2. If the backend ships different code, it streams the new source bundle back.
+3. The client verifies every file (SHA-256 + it must compile), writes them
+   atomically, then **re-execs itself** — the systemd unit keeps running, the
+   client reconnects, and now runs the new code.
+
+So whenever you deploy a new backend image (the client source is bundled into
+it), every connected printer upgrades itself on its next reconnect. In-flight
+jobs are safe: delivery is at-least-once, so anything not yet acknowledged is
+requeued across the brief reload.
+
+Notes:
+
+- The device must already be running a build that understands updates (this
+  feature). Bootstrap once with `pip install ".[client]"`; afterwards updates
+  are automatic.
+- Disable per side with `RTP_SERVER_AUTO_UPDATE=false` (stop offering) or
+  `RTP_CLIENT_AUTO_UPDATE=false` (receive jobs but ignore updates).
+- The client install location must be writable by the service user. Updates add
+  or overwrite files; they never delete code the backend no longer ships.
+- Check what the backend serves: `GET /api/client/version`.
+
 ## HTTP API
 
 The HTTP API accepts **either** a logged-in web session (see
@@ -179,6 +218,7 @@ parameter. Auth is only enforced when a token or OIDC login is configured.
 | `GET` | `/api/jobs?limit=N` | Recent jobs and their state |
 | `POST` | `/api/receipts` | Submit a full receipt (JSON, see below) |
 | `POST` | `/api/receipts/text` | Quick text receipt |
+| `POST` | `/api/receipts/receiptline` | Submit ReceiptLine markdown |
 | `POST` | `/api/upload` | Upload an image or PDF (multipart form) |
 | `WS` | `/ws` | Printer client connection (printer token) |
 
@@ -207,6 +247,14 @@ Quick text receipt:
 curl -X POST http://localhost:8000/api/receipts/text \
   -H 'Content-Type: application/json' \
   -d '{"text":"Hello world","align":"center","bold":true}'
+```
+
+ReceiptLine markdown:
+
+```bash
+curl -X POST http://localhost:8000/api/receipts/receiptline \
+  -H 'Content-Type: application/json' \
+  -d '{"doc":"Asparagus | 0.99\nBroccoli | 1.99\n---\n^TOTAL | ^2.98","cpl":42}'
 ```
 
 Upload an image or PDF:

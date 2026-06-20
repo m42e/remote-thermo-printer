@@ -5,6 +5,7 @@ A *receipt* is an ordered list of *elements*. Each element is one of:
 * :class:`TextElement`  – formatted text
 * :class:`ImageElement` – a raster image (PNG/JPEG/GIF/BMP), base64 encoded
 * :class:`PdfElement`   – a PDF document, base64 encoded (rendered page by page)
+* :class:`RawElement`   – printer command bytes, base64 encoded
 
 Receipts are submitted to the backend over HTTP and forwarded to a connected
 client over a WebSocket using the small message envelope defined at the bottom
@@ -22,7 +23,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, TypeAdapter
 from typing_extensions import Annotated, Literal
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 
 def _utcnow() -> datetime:
@@ -81,8 +82,18 @@ class PdfElement(BaseModel):
         return base64.b64decode(self.data)
 
 
+class RawElement(BaseModel):
+    """Raw printer command bytes, base64 encoded."""
+
+    type: Literal["raw"] = "raw"
+    data: str = Field(repr=False)
+
+    def decoded(self) -> bytes:
+        return base64.b64decode(self.data)
+
+
 ReceiptElement = Annotated[
-    Union[TextElement, ImageElement, PdfElement],
+    Union[TextElement, ImageElement, PdfElement, RawElement],
     Field(discriminator="type"),
 ]
 
@@ -128,6 +139,12 @@ def pdf_receipt(data: bytes, **kwargs: object) -> Receipt:
     return Receipt(elements=[PdfElement(data=encoded, **element_kwargs)], **kwargs)
 
 
+def raw_receipt(data: bytes, **kwargs: object) -> Receipt:
+    """Build a receipt containing one raw printer command element."""
+    encoded = base64.b64encode(data).decode("ascii")
+    return Receipt(elements=[RawElement(data=encoded)], **kwargs)
+
+
 # --------------------------------------------------------------------------- #
 # WebSocket envelope: client -> server
 # --------------------------------------------------------------------------- #
@@ -139,6 +156,12 @@ class ClientHello(BaseModel):
     printer_id: str
     name: Optional[str] = None
     token: Optional[str] = None
+    # Human-readable version of the client code (informational, for logs/UI).
+    version: Optional[str] = None
+    # Fingerprint of the client's running code bundle (see ``common.bundle``).
+    # The server compares it to its own bundle to decide whether to push an
+    # over-the-air update.
+    bundle_revision: Optional[str] = None
 
 
 class Ack(BaseModel):
@@ -179,13 +202,38 @@ class JobMessage(BaseModel):
     receipt: Receipt
 
 
+class UpdateFile(BaseModel):
+    """One source file of a client code update, base64 encoded."""
+
+    path: str
+    sha256: str
+    data: str = Field(repr=False)
+
+    def decoded(self) -> bytes:
+        return base64.b64decode(self.data)
+
+
+class UpdateMessage(BaseModel):
+    """An over-the-air client code update pushed by the server.
+
+    Carries the full set of bundled source files plus the target *revision*
+    (a fingerprint of the whole bundle, see :mod:`common.bundle`). The client
+    applies the files atomically and re-executes itself to run the new code.
+    """
+
+    type: Literal["update"] = "update"
+    revision: str
+    version: Optional[str] = None
+    files: List[UpdateFile] = Field(default_factory=list)
+
+
 class ErrorMessage(BaseModel):
     type: Literal["error"] = "error"
     detail: str
 
 
 ServerMessage = Annotated[
-    Union[Welcome, JobMessage, ErrorMessage],
+    Union[Welcome, JobMessage, UpdateMessage, ErrorMessage],
     Field(discriminator="type"),
 ]
 
@@ -199,6 +247,6 @@ def parse_client_message(data: object) -> Union[ClientHello, Ack, ClientStatus]:
     return _client_message_adapter.validate_python(data)
 
 
-def parse_server_message(data: object) -> Union[Welcome, JobMessage, ErrorMessage]:
+def parse_server_message(data: object) -> Union[Welcome, JobMessage, UpdateMessage, ErrorMessage]:
     """Validate a raw dict into one of the server message models."""
     return _server_message_adapter.validate_python(data)

@@ -34,6 +34,10 @@ class ClientSettings(BaseSettings):
     reconnect_min_seconds: float = 1.0
     reconnect_max_seconds: float = 30.0
 
+    # When True, automatically apply code updates pushed by the server and
+    # reload into them (the process re-execs itself; no manual restart needed).
+    auto_update: bool = True
+
     # --- printer behaviour ---
     connection: ConnectionType = ConnectionType.dummy
     # Width of the print head in dots; wider images/PDF pages are scaled down.

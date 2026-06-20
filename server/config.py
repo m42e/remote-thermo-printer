@@ -56,6 +56,11 @@ class ServerSettings(BaseSettings):
     # Maximum accepted upload / receipt size in megabytes.
     max_upload_mb: int = 25
 
+    # --- over-the-air client updates --------------------------------------- #
+    # When enabled, a connecting client whose code differs from the code this
+    # server ships is sent the new bundle to apply and reload automatically.
+    auto_update: bool = True
+
     # ----------------------------------------------------------------------- #
     # Derived helpers
     # ----------------------------------------------------------------------- #

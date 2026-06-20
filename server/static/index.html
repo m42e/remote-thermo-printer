@@ -154,6 +154,7 @@
       <h2>Create a receipt</h2>
       <div class="tabs">
         <button data-tab="text" class="active">Text</button>
+        <button data-tab="receiptline">ReceiptLine</button>
         <button data-tab="image">Image</button>
         <button data-tab="pdf">PDF</button>
       </div>
@@ -186,6 +187,40 @@
           <label><input id="text-cut" type="checkbox" checked /> Cut</label>
         </div>
         <button id="send-text">Print text</button>
+      </div>
+
+      <div id="tab-receiptline" class="tab">
+        <label for="receiptline-doc">ReceiptLine</label>
+        <textarea id="receiptline-doc" placeholder="Asparagus | 0.99&#10;Broccoli | 1.99&#10;---&#10;^TOTAL | ^2.98"></textarea>
+        <div class="row">
+          <div>
+            <label for="receiptline-cpl">Characters per line</label>
+            <input id="receiptline-cpl" type="number" value="48" min="24" max="96" />
+          </div>
+          <div>
+            <label for="receiptline-command">Command set</label>
+            <select id="receiptline-command">
+              <option value="escpos">ESC/POS</option>
+              <option value="epson">Epson</option>
+              <option value="generic">Generic</option>
+            </select>
+          </div>
+          <div>
+            <label for="receiptline-encoding">Encoding</label>
+            <select id="receiptline-encoding">
+              <option value="multilingual">Multilingual</option>
+              <option value="cp437">CP437</option>
+              <option value="cp858">CP858</option>
+              <option value="cp1252">CP1252</option>
+              <option value="shiftjis">Shift JIS</option>
+            </select>
+          </div>
+        </div>
+        <div class="checks">
+          <label><input id="receiptline-spacing" type="checkbox" /> Line spacing</label>
+          <label><input id="receiptline-cut" type="checkbox" checked /> Cut</label>
+        </div>
+        <button id="send-receiptline">Print ReceiptLine</button>
       </div>
 
       <div id="tab-image" class="tab">
@@ -407,6 +442,25 @@
       };
       if (!payload.text.trim()) return toast("Enter some text first", "err");
       submitJobs(fetch("/api/receipts/text", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(payload),
+      }));
+    });
+
+    $("send-receiptline").addEventListener("click", () => {
+      const payload = {
+        doc: $("receiptline-doc").value,
+        cpl: parseInt($("receiptline-cpl").value, 10),
+        command: $("receiptline-command").value,
+        encoding: $("receiptline-encoding").value,
+        spacing: $("receiptline-spacing").checked,
+        cutting: $("receiptline-cut").checked,
+        target: target(),
+      };
+      if (!payload.doc.trim()) return toast("Enter a ReceiptLine document first", "err");
+      submitJobs(fetch("/api/receipts/receiptline", {
         method: "POST",
         credentials: "same-origin",
         headers: authHeaders({ "Content-Type": "application/json" }),

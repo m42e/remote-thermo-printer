@@ -12,6 +12,7 @@ dist/
 .venv/
 venv/
 env/
+node_modules/
 
 # Secrets and local config (pass env vars or mount at runtime instead)
 .env

@@ -7,7 +7,7 @@ import logging
 import secrets
 from contextlib import suppress
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import (
     Depends,
@@ -23,7 +23,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from starlette.middleware.sessions import SessionMiddleware
 
 from common.protocol import (
@@ -40,11 +40,14 @@ from common.protocol import (
     image_receipt,
     parse_client_message,
     pdf_receipt,
+    raw_receipt,
 )
 from server.auth import require_auth
 from server.auth import router as auth_router
 from server.config import get_settings
 from server.manager import ConnectionManager
+from server.receiptline import ReceiptLineError, render_escpos
+from server.updates import current_revision, get_update_message
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,6 +108,20 @@ class TextRequest(BaseModel):
     target: Optional[str] = None
 
 
+class ReceiptLineRequest(BaseModel):
+    doc: str
+    cpl: int = Field(default=48, ge=24, le=96)
+    encoding: str = "multilingual"
+    command: Literal["escpos", "epson", "generic"] = "escpos"
+    upside_down: bool = False
+    spacing: bool = False
+    cutting: bool = True
+    margin: int = Field(default=0, ge=0, le=24)
+    margin_right: int = Field(default=0, ge=0, le=24)
+    title: Optional[str] = None
+    target: Optional[str] = None
+
+
 def _jobs_response(jobs) -> dict:
     return {"count": len(jobs), "jobs": [job.info() for job in jobs]}
 
@@ -119,6 +136,18 @@ async def health() -> dict:
         "status": "ok",
         "printers_online": len(manager.printers()),
         "pending_jobs": manager.pending_count,
+    }
+
+
+@app.get("/api/client/version")
+async def client_version() -> dict:
+    """The client code bundle this server ships (for diagnostics / OTA checks)."""
+    update = get_update_message()
+    return {
+        "version": update.version,
+        "revision": update.revision,
+        "files": len(update.files),
+        "auto_update": _settings.auto_update,
     }
 
 
@@ -156,6 +185,31 @@ async def submit_text(request: TextRequest) -> dict:
             )
         ],
     )
+    jobs = await manager.submit(receipt, request.target)
+    return _jobs_response(jobs)
+
+
+@app.post("/api/receipts/receiptline", dependencies=[Depends(require_auth)])
+async def submit_receiptline(request: ReceiptLineRequest) -> dict:
+    if not request.doc.strip():
+        raise HTTPException(status_code=400, detail="ReceiptLine document is empty")
+
+    printer = {
+        "cpl": request.cpl,
+        "encoding": request.encoding,
+        "command": request.command,
+        "upsideDown": request.upside_down,
+        "spacing": request.spacing,
+        "cutting": request.cutting,
+        "margin": request.margin,
+        "marginRight": request.margin_right,
+    }
+    try:
+        commands = render_escpos(request.doc, printer)
+    except ReceiptLineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    receipt = raw_receipt(commands, title=request.title, cut=False)
     jobs = await manager.submit(receipt, request.target)
     return _jobs_response(jobs)
 
@@ -205,6 +259,29 @@ async def _close_with_error(websocket: WebSocket, detail: str, code: int) -> Non
         await websocket.close(code=code)
 
 
+async def _maybe_offer_update(websocket: WebSocket, hello: ClientHello) -> None:
+    """Send the current client bundle when the device is running older code.
+
+    The client applies it and re-execs, so we simply log the offer here and let
+    at-least-once job delivery cover the brief reconnect.
+    """
+    if not get_settings().auto_update:
+        return
+    server_revision = current_revision()
+    if hello.bundle_revision == server_revision:
+        return
+    update = get_update_message()
+    with suppress(Exception):
+        await websocket.send_json(update.model_dump(mode="json"))
+    logger.info(
+        "Offered update to printer %s (%s -> %s, %d file(s))",
+        hello.printer_id,
+        (hello.bundle_revision or "unknown")[:12],
+        server_revision[:12],
+        len(update.files),
+    )
+
+
 @app.websocket("/ws")
 async def printer_socket(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -240,6 +317,9 @@ async def printer_socket(websocket: WebSocket) -> None:
     connection = await manager.connect(websocket, message.printer_id, message.name)
     with suppress(Exception):
         await websocket.send_json(Welcome(message="connected").model_dump(mode="json"))
+    # Offer a code update before any jobs flow, so an out-of-date device reloads
+    # first instead of printing with stale code.
+    await _maybe_offer_update(websocket, message)
     connection.sender_task = asyncio.create_task(manager.sender_loop(connection))
 
     try:

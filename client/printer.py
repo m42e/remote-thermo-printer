@@ -14,7 +14,7 @@ from typing import List, Optional
 from PIL import Image
 
 from client.config import ClientSettings, ConnectionType
-from common.protocol import ImageElement, PdfElement, Receipt, TextElement
+from common.protocol import ImageElement, PdfElement, RawElement, Receipt, TextElement
 
 logger = logging.getLogger("rtp.client.printer")
 
@@ -181,6 +181,8 @@ class ReceiptPrinter:
                 self._render_image(printer, element)
             elif isinstance(element, PdfElement):
                 self._render_pdf(printer, element)
+            elif isinstance(element, RawElement):
+                self._render_raw(printer, element)
             else:  # pragma: no cover - guarded by the protocol union
                 raise PrinterError(f"Unknown element type: {element!r}")
 
@@ -235,6 +237,12 @@ class ReceiptPrinter:
         for page in pages:
             printer.image(self._prepare_image(page), impl="bitImageRaster")
         printer.set_with_default()
+
+    def _render_raw(self, printer, element: RawElement) -> None:
+        try:
+            printer._raw(element.decoded())
+        except AttributeError as exc:
+            raise PrinterError("Printer backend does not support raw commands") from exc
 
     def _prepare_image(self, image: Image.Image) -> Image.Image:
         """Flatten transparency, convert to grayscale and fit the print width."""

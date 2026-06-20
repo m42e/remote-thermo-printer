@@ -1,5 +1,7 @@
 """Shared code between the remote-thermo-printer server and client."""
 
+__version__ = "0.1.0"
+
 from common.protocol import (
     PROTOCOL_VERSION,
     Ack,
@@ -15,6 +17,8 @@ from common.protocol import (
     Receipt,
     ReceiptElement,
     TextElement,
+    UpdateFile,
+    UpdateMessage,
     Welcome,
     image_receipt,
     parse_client_message,
@@ -25,6 +29,7 @@ from common.protocol import (
 
 __all__ = [
     "PROTOCOL_VERSION",
+    "__version__",
     "Ack",
     "Alignment",
     "ClientHello",
@@ -38,6 +43,8 @@ __all__ = [
     "Receipt",
     "ReceiptElement",
     "TextElement",
+    "UpdateFile",
+    "UpdateMessage",
     "Welcome",
     "image_receipt",
     "parse_client_message",
