@@ -81,6 +81,14 @@ pip install ".[dev]"
 Copy `.env.example` to `.env` and edit it. Backend reads `RTP_SERVER_*`, the
 client reads `RTP_CLIENT_*`; both can share one file.
 
+Key backend settings:
+
+| Variable | Meaning |
+| --- | --- |
+| `RTP_SERVER_HOST` | Bind address for the HTTP/WebSocket backend |
+| `RTP_SERVER_PORT` | Backend port |
+| `RTP_SERVER_RECEIPTLINE_CPL` | Default ReceiptLine editor / API width in characters per line (default `42`) |
+
 Key client settings:
 
 | Variable | Meaning |
@@ -219,6 +227,7 @@ parameter. Auth is only enforced when a token or OIDC login is configured.
 | `POST` | `/api/receipts` | Submit a full receipt (JSON, see below) |
 | `POST` | `/api/receipts/text` | Quick text receipt |
 | `POST` | `/api/receipts/receiptline` | Submit ReceiptLine markdown |
+| `POST` | `/api/receiptline/preview` | Render ReceiptLine markdown as SVG for preview |
 | `POST` | `/api/upload` | Upload an image or PDF (multipart form) |
 | `WS` | `/ws` | Printer client connection (printer token) |
 
@@ -253,6 +262,14 @@ ReceiptLine markdown:
 
 ```bash
 curl -X POST http://localhost:8000/api/receipts/receiptline \
+  -H 'Content-Type: application/json' \
+  -d '{"doc":"Asparagus | 0.99\nBroccoli | 1.99\n---\n^TOTAL | ^2.98","cpl":42}'
+```
+
+ReceiptLine SVG preview:
+
+```bash
+curl -X POST http://localhost:8000/api/receiptline/preview \
   -H 'Content-Type: application/json' \
   -d '{"doc":"Asparagus | 0.99\nBroccoli | 1.99\n---\n^TOTAL | ^2.98","cpl":42}'
 ```

@@ -118,6 +118,24 @@
     .toast.ok { border-color: var(--ok); }
     .toast.err { border-color: var(--err); }
     .muted { color: var(--muted); font-size: 0.8rem; }
+    .editor-preview {
+      margin-top: 1rem;
+      background: #f8fafc;
+      color: #0f172a;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      padding: 1rem;
+      min-height: 160px;
+      overflow: auto;
+    }
+    .editor-preview img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+    .editor-preview.empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748b;
+      font-size: 0.85rem;
+    }
     @media (max-width: 720px) { main { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -195,7 +213,7 @@
         <div class="row">
           <div>
             <label for="receiptline-cpl">Characters per line</label>
-            <input id="receiptline-cpl" type="number" value="48" min="24" max="96" />
+            <input id="receiptline-cpl" type="number" value="42" min="24" max="96" />
           </div>
           <div>
             <label for="receiptline-command">Command set</label>
@@ -221,6 +239,8 @@
           <label><input id="receiptline-cut" type="checkbox" checked /> Cut</label>
         </div>
         <button id="send-receiptline">Print ReceiptLine</button>
+        <label>Preview</label>
+        <div id="receiptline-preview" class="editor-preview empty">Enter ReceiptLine markdown to preview it here.</div>
       </div>
 
       <div id="tab-image" class="tab">
@@ -299,6 +319,7 @@
       authRequired: false,
       loginUrl: "/auth/login",
       logoutUrl: "/auth/logout",
+      receiptlineCpl: 42,
       user: null,
     };
 
@@ -377,7 +398,10 @@
           authRequired: cfg.auth_required,
           loginUrl: cfg.login_url || "/auth/login",
           logoutUrl: cfg.logout_url || "/auth/logout",
+          receiptlineCpl: cfg.receiptline_cpl || 42,
         });
+        $("receiptline-cpl").value = auth.receiptlineCpl;
+        updateReceiptLinePreview();
       } catch (e) { /* server unreachable */ }
       try {
         const res = await fetch("/api/me", { credentials: "same-origin" });
@@ -466,6 +490,73 @@
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(payload),
       }));
+    });
+
+    function receiptLinePreviewPayload() {
+      return {
+        doc: $("receiptline-doc").value,
+        cpl: parseInt($("receiptline-cpl").value, 10),
+        encoding: $("receiptline-encoding").value,
+        spacing: $("receiptline-spacing").checked,
+      };
+    }
+
+    let receiptLinePreviewTimer = null;
+    let receiptLinePreviewRequest = 0;
+    let receiptLinePreviewUrl = null;
+
+    function revokeReceiptLinePreviewUrl() {
+      if (receiptLinePreviewUrl) URL.revokeObjectURL(receiptLinePreviewUrl);
+      receiptLinePreviewUrl = null;
+    }
+
+    function setReceiptLinePreviewEmpty(message) {
+      revokeReceiptLinePreviewUrl();
+      const preview = $("receiptline-preview");
+      preview.className = "editor-preview empty";
+      preview.textContent = message;
+    }
+
+    function scheduleReceiptLinePreview() {
+      clearTimeout(receiptLinePreviewTimer);
+      receiptLinePreviewTimer = setTimeout(updateReceiptLinePreview, 250);
+    }
+
+    async function updateReceiptLinePreview() {
+      const payload = receiptLinePreviewPayload();
+      if (!payload.doc.trim()) return setReceiptLinePreviewEmpty("Enter ReceiptLine markdown to preview it here.");
+      if (!isAuthed()) return setReceiptLinePreviewEmpty("Sign in to render the preview.");
+
+      const requestId = ++receiptLinePreviewRequest;
+      try {
+        const res = await fetch("/api/receiptline/preview", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(payload),
+        });
+        if (requestId !== receiptLinePreviewRequest) return;
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || res.status + " " + res.statusText);
+        }
+        const preview = $("receiptline-preview");
+        const data = await res.json();
+        if (!data.svg) return setReceiptLinePreviewEmpty("Enter ReceiptLine markdown to preview it here.");
+        revokeReceiptLinePreviewUrl();
+        receiptLinePreviewUrl = URL.createObjectURL(new Blob([data.svg], { type: "image/svg+xml" }));
+        preview.className = "editor-preview";
+        preview.innerHTML = `<img src="${receiptLinePreviewUrl}" alt="ReceiptLine preview" />`;
+      } catch (err) {
+        if (requestId === receiptLinePreviewRequest) {
+          setReceiptLinePreviewEmpty("Preview error: " + err.message);
+        }
+      }
+    }
+
+    ["receiptline-doc", "receiptline-cpl", "receiptline-encoding", "receiptline-spacing"].forEach((id) => {
+      $(id).addEventListener("input", scheduleReceiptLinePreview);
+      $(id).addEventListener("change", scheduleReceiptLinePreview);
     });
 
     function uploadFile(fileEl, alignEl, cutEl, dpiEl) {

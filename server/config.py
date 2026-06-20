@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Optional, Set
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,6 +56,9 @@ class ServerSettings(BaseSettings):
 
     # Maximum accepted upload / receipt size in megabytes.
     max_upload_mb: int = 25
+
+    # Default ReceiptLine paper width used by the web editor and API defaults.
+    receiptline_cpl: int = Field(default=42, ge=24, le=96)
 
     # --- over-the-air client updates --------------------------------------- #
     # When enabled, a connecting client whose code differs from the code this

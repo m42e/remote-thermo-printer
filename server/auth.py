@@ -182,6 +182,7 @@ async def auth_config() -> dict:
         "logout_url": "/auth/logout",
         "api_token_required": api_token_required,
         "auth_required": settings.oidc_active or api_token_required,
+        "receiptline_cpl": settings.receiptline_cpl,
     }
 
 

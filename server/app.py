@@ -7,7 +7,7 @@ import logging
 import secrets
 from contextlib import suppress
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from fastapi import (
     Depends,
@@ -46,7 +46,7 @@ from server.auth import require_auth
 from server.auth import router as auth_router
 from server.config import get_settings
 from server.manager import ConnectionManager
-from server.receiptline import ReceiptLineError, render_escpos
+from server.receiptline import ReceiptLineError, render_escpos, render_svg
 from server.updates import current_revision, get_update_message
 
 logging.basicConfig(
@@ -110,7 +110,7 @@ class TextRequest(BaseModel):
 
 class ReceiptLineRequest(BaseModel):
     doc: str
-    cpl: int = Field(default=48, ge=24, le=96)
+    cpl: int = Field(default=_settings.receiptline_cpl, ge=24, le=96)
     encoding: str = "multilingual"
     command: Literal["escpos", "epson", "generic"] = "escpos"
     upside_down: bool = False
@@ -122,8 +122,34 @@ class ReceiptLineRequest(BaseModel):
     target: Optional[str] = None
 
 
+class ReceiptLinePreviewRequest(BaseModel):
+    doc: str
+    cpl: int = Field(default=_settings.receiptline_cpl, ge=24, le=96)
+    encoding: str = "multilingual"
+    upside_down: bool = False
+    spacing: bool = False
+    margin: int = Field(default=0, ge=0, le=24)
+    margin_right: int = Field(default=0, ge=0, le=24)
+
+
 def _jobs_response(jobs) -> dict:
     return {"count": len(jobs), "jobs": [job.info() for job in jobs]}
+
+
+def _receiptline_printer(
+    request: Union[ReceiptLineRequest, ReceiptLinePreviewRequest]
+) -> dict:
+    printer = {
+        "cpl": request.cpl,
+        "encoding": request.encoding,
+        "upsideDown": request.upside_down,
+        "spacing": request.spacing,
+        "margin": request.margin,
+        "marginRight": request.margin_right,
+    }
+    if isinstance(request, ReceiptLineRequest):
+        printer.update({"command": request.command, "cutting": request.cutting})
+    return printer
 
 
 # --------------------------------------------------------------------------- #
@@ -194,24 +220,26 @@ async def submit_receiptline(request: ReceiptLineRequest) -> dict:
     if not request.doc.strip():
         raise HTTPException(status_code=400, detail="ReceiptLine document is empty")
 
-    printer = {
-        "cpl": request.cpl,
-        "encoding": request.encoding,
-        "command": request.command,
-        "upsideDown": request.upside_down,
-        "spacing": request.spacing,
-        "cutting": request.cutting,
-        "margin": request.margin,
-        "marginRight": request.margin_right,
-    }
     try:
-        commands = render_escpos(request.doc, printer)
+        commands = render_escpos(request.doc, _receiptline_printer(request))
     except ReceiptLineError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     receipt = raw_receipt(commands, title=request.title, cut=False)
     jobs = await manager.submit(receipt, request.target)
     return _jobs_response(jobs)
+
+
+@app.post("/api/receiptline/preview", dependencies=[Depends(require_auth)])
+async def preview_receiptline(request: ReceiptLinePreviewRequest) -> dict:
+    if not request.doc.strip():
+        return {"svg": ""}
+
+    try:
+        svg = render_svg(request.doc, _receiptline_printer(request))
+    except ReceiptLineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"svg": svg}
 
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp")
