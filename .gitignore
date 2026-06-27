@@ -14,6 +14,9 @@ node_modules/
 
 # Environment / secrets
 .env
+raspberrypi.conf
+wpa_supplicant.conf
+configs/
 
 # Tooling
 .pytest_cache/
